@@ -1,5 +1,5 @@
 /*
-android_nosdl.c - android backend
+ android_nosdl.c - android backend
 Copyright (C) 2016 mittorn
 
 This program is free software: you can redistribute it and/or modify
@@ -71,6 +71,7 @@ static const int s_android_scantokey[] =
 
 #define ANDROID_MAX_EVENTS 64
 #define MAX_FINGERS 10
+#define MAX_TOUCHPAD_FINGERS 10
 
 typedef enum event_type
 {
@@ -152,7 +153,15 @@ typedef struct finger_s
 	qboolean down;
 } finger_t;
 
+typedef struct touchpad_finger_s
+{
+	float x, y;
+	qboolean down;
+} touchpad_finger_t;
+
+
 static struct {
+	touchpad_finger_t touchpad_fingers[MAX_TOUCHPAD_FINGERS];
 	pthread_mutex_t mutex; // this mutex is locked while not running frame, used for events synchronization
 	pthread_mutex_t framemutex; // this mutex is locked while engine is running and unlocked while it reading events, used for pause in background.
 	event_t queue[ANDROID_MAX_EVENTS];
@@ -627,6 +636,69 @@ DECLARE_JNI_INTERFACE( void, nativeTouch, jint finger, jint action, jfloat x, jf
 	event->touch.dx = dx;
 	event->touch.dy = dy;
 	Android_PushEvent();
+}
+
+DECLARE_JNI_INTERFACE( void, nativeTouchpad, jint finger, jint action, jfloat x, jfloat y )
+{
+	float dx, dy;
+	
+	// if something wrong with android event
+	if( finger >= MAX_TOUCHPAD_FINGERS )
+		return;
+	
+	// not touch action?
+	if( !( action >=0 && action <= 2 ) )
+		return;
+	
+	// 0.0f .. 1.0f
+	// Scale touchpad coordinates appropriately
+	// Xperia Play touchpad resolution is 966x360 according to the example
+	float normalized_x = x / 966.0f;
+	float normalized_y = y / 360.0f;
+	
+	if( action )
+		dx = normalized_x - events.touchpad_fingers[finger].x, dy = normalized_y - events.touchpad_fingers[finger].y;
+	else
+		dx = dy = 0.0f;
+	events.touchpad_fingers[finger].x = normalized_x, events.touchpad_fingers[finger].y = normalized_y;
+	
+	// check if we should skip some events
+	if( ( action == 2 ) && ( !dx && !dy ) )
+		return;
+	
+	if( ( action == 0 ) && events.touchpad_fingers[finger].down )
+		return;
+	
+	if( ( action == 1 ) && !events.touchpad_fingers[finger].down )
+		return;
+	
+	if( action == 2 && !events.touchpad_fingers[finger].down )
+		action = 0;
+	
+	if( action == 0 )
+		events.touchpad_fingers[finger].down = true;
+	else if( action == 1 )
+		events.touchpad_fingers[finger].down = false;
+	
+	// Convert touchpad events to joystick events
+	if( action == 0 || action == 1 || action == 2 )
+	{
+		// For touchpad, we'll map it to joystick axis events
+		// X axis (left/right) will be axis 0, Y axis (up/down) will be axis 1
+		event_t *event_x = Android_AllocEvent();
+		event_x->type = event_joyaxis;
+		event_x->arg = 0; // joystick id
+		event_x->axis.axis = 0; // X axis
+		event_x->axis.val = (short)(normalized_x * 32767 - 16384); // Convert to short range
+		Android_PushEvent();
+		
+		event_t *event_y = Android_AllocEvent();
+		event_y->type = event_joyaxis;
+		event_y->arg = 0; // joystick id
+		event_y->axis.axis = 1; // Y axis
+		event_y->axis.val = (short)(normalized_y * 32767 - 16384); // Convert to short range
+		Android_PushEvent();
+	}
 }
 
 DECLARE_JNI_INTERFACE( void, nativeBall, jint id, jbyte ball, jshort xrel, jshort yrel )
